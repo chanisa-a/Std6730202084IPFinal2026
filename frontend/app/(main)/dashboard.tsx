@@ -5,7 +5,7 @@ import { ActivityIndicator, Alert, Platform, Pressable, ScrollView, StyleSheet, 
 import { LoadingScreen } from '@/components/LoadingScreen';
 import { appColors, appRadius, appSpacing } from '@/constants/appTheme';
 import { useAuth } from '@/contexts/AuthContext';
-import { createEmployee, deleteEmployee, getEmployees, getSalaryClusters, toggleEmployeeStatus, type Employee, type SalaryCluster } from '@/lib/hrApi';
+import { createEmployee, deleteEmployee, getEmployees, getSalaryClusters, toggleEmployeeStatus, updateEmployee, type Employee, type SalaryCluster } from '@/lib/hrApi';
 
 function formatSalary(salary: number | null) {
   return salary === null ? '—' : `฿${salary.toLocaleString('en-US', { maximumFractionDigits: 2 })}`;
@@ -22,6 +22,9 @@ export default function DashboardScreen() {
   const [name, setName] = useState('');
   const [position, setPosition] = useState('');
   const [salary, setSalary] = useState('');
+  const [search, setSearch] = useState('');
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [formStatus, setFormStatus] = useState<Employee['status']>('Active');
 
   const refreshEmployees = useCallback(async () => {
     setLoading(true);
@@ -44,11 +47,11 @@ export default function DashboardScreen() {
     const normalizedPosition = position.trim();
     const parsedSalary = Number(salary);
     if (!normalizedName || !normalizedPosition || !salary.trim()) {
-      Alert.alert('กรอกข้อมูลไม่ครบ', 'กรุณากรอกชื่อ ตำแหน่ง และเงินเดือน');
+      showAlert('กรอกข้อมูลไม่ครบ', 'กรุณากรอกชื่อ ตำแหน่ง และเงินเดือน');
       return;
     }
-    if (!Number.isFinite(parsedSalary) || parsedSalary < 0) {
-      Alert.alert('เงินเดือนไม่ถูกต้อง', 'กรุณากรอกเงินเดือนเป็นตัวเลขตั้งแต่ 0 ขึ้นไป');
+    if (!Number.isFinite(parsedSalary) || parsedSalary < 0 || parsedSalary > 99999999.99) {
+      showAlert('เงินเดือนไม่ถูกต้อง', 'กรุณากรอกเงินเดือนตั้งแต่ 0 ถึง 99,999,999.99 บาท');
       return;
     }
 
@@ -60,12 +63,75 @@ export default function DashboardScreen() {
       setName('');
       setPosition('');
       setSalary('');
+      setEditingId(null);
+      setFormStatus('Active');
       setClusters(null);
     } catch (saveError) {
       setError(saveError instanceof Error ? saveError.message : 'เพิ่มพนักงานไม่สำเร็จ');
     } finally {
       setSaving(false);
     }
+  };
+
+  const saveEmployee = async () => {
+    const normalizedName = name.trim();
+    const normalizedPosition = position.trim();
+    const parsedSalary = Number(salary);
+    if (!normalizedName || !normalizedPosition || !salary.trim()) {
+      showAlert('กรอกข้อมูลไม่ครบ', 'กรุณากรอกชื่อ ตำแหน่ง และเงินเดือน');
+      return;
+    }
+    if (!Number.isFinite(parsedSalary) || parsedSalary < 0 || parsedSalary > 99999999.99) {
+      showAlert('เงินเดือนไม่ถูกต้อง', 'กรุณากรอกเงินเดือนตั้งแต่ 0 ถึง 99,999,999.99 บาท');
+      return;
+    }
+    if (!editingId) return;
+
+    setSaving(true);
+    setError('');
+    try {
+      const employee = await updateEmployee(editingId, {
+        name: normalizedName,
+        position: normalizedPosition,
+        salary: parsedSalary,
+        status: formStatus,
+      });
+      setEmployees((current) => current.map((item) => item.id === employee.id ? employee : item));
+      setEditingId(null);
+      setName('');
+      setPosition('');
+      setSalary('');
+      setFormStatus('Active');
+      setClusters(null);
+    } catch (saveError) {
+      setError(saveError instanceof Error ? saveError.message : 'แก้ไขข้อมูลพนักงานไม่สำเร็จ');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const startEditing = (employee: Employee) => {
+    setEditingId(employee.id);
+    setName(employee.name);
+    setPosition(employee.position);
+    setSalary(String(employee.salary));
+    setFormStatus(employee.status);
+  };
+
+  const cancelEditing = () => {
+    setEditingId(null);
+    setName('');
+    setPosition('');
+    setSalary('');
+    setFormStatus('Active');
+  };
+
+  const showAlert = (title: string, message: string) => {
+    if (Platform.OS === 'web') {
+      window.alert(`${title}\n\n${message}`);
+      return;
+    }
+    Alert.alert(title, message);
   };
 
   const changeStatus = async (employee: Employee) => {
@@ -116,6 +182,10 @@ export default function DashboardScreen() {
   const averageSalary = employees.length
     ? employees.reduce((total, employee) => total + employee.salary, 0) / employees.length
     : 0;
+  const visibleEmployees = employees.filter((employee) => (
+    [employee.name, employee.position, employee.status, String(employee.salary)]
+      .some((value) => value.toLowerCase().includes(search.trim().toLowerCase()))
+  ));
 
   if (loading) return <LoadingScreen label="กำลังโหลดข้อมูลพนักงาน..." />;
 
@@ -138,7 +208,7 @@ export default function DashboardScreen() {
         <View style={styles.welcomeCopy}>
           <Text style={styles.welcomeEyebrow}>HR MANAGER</Text>
           <Text style={styles.welcomeTitle}>ยินดีต้อนรับ, {user?.username}</Text>
-          <Text style={styles.welcomeText}>ข้อมูลพนักงานทั้งหมดจัดเก็บในหน่วยความจำของเซิร์ฟเวอร์</Text>
+          <Text style={styles.welcomeText}>ข้อมูลพนักงานอ่านและบันทึกผ่านเซิร์ฟเวอร์ลงฐานข้อมูล MySQL</Text>
         </View>
         <View style={styles.liveBadge}><View style={styles.liveDot} /><Text style={styles.liveText}>LIVE</Text></View>
       </View>
@@ -172,7 +242,7 @@ export default function DashboardScreen() {
       <View style={styles.columns}>
         <View style={styles.formCard}>
           <View style={styles.sectionHeading}>
-            <View><Text style={styles.sectionTitle}>เพิ่มพนักงาน</Text><Text style={styles.sectionSub}>กรอกข้อมูลเพื่อเพิ่มสมาชิกใหม่</Text></View>
+            <View><Text style={styles.sectionTitle}>{editingId ? 'แก้ไขข้อมูลพนักงาน' : 'เพิ่มพนักงาน'}</Text><Text style={styles.sectionSub}>{editingId ? 'ปรับข้อมูลแล้วบันทึกลงฐานข้อมูล' : 'กรอกข้อมูลเพื่อเพิ่มสมาชิกใหม่'}</Text></View>
             <Ionicons name="person-add-outline" size={21} color={appColors.primary} />
           </View>
           <Text style={styles.label}>ชื่อ-นามสกุล</Text>
@@ -181,9 +251,16 @@ export default function DashboardScreen() {
           <TextInput onChangeText={setPosition} placeholder="เช่น UX Designer" placeholderTextColor={appColors.subtle} style={styles.input} value={position} />
           <Text style={styles.label}>เงินเดือน (บาท)</Text>
           <TextInput keyboardType="decimal-pad" onChangeText={setSalary} placeholder="เช่น 45000" placeholderTextColor={appColors.subtle} style={styles.input} value={salary} />
-          <Pressable disabled={saving} onPress={() => void addEmployee()} style={({ pressed }) => [styles.addButton, pressed && styles.pressed, saving && styles.disabled]}>
-            {saving ? <ActivityIndicator color="#FFFFFF" size="small" /> : <><Ionicons name="add" size={19} color="#FFFFFF" /><Text style={styles.addButtonText}>เพิ่มพนักงาน</Text></>}
+          {editingId ? (
+            <Pressable onPress={() => setFormStatus((current) => current === 'Active' ? 'On Leave' : 'Active')} style={styles.formStatusButton}>
+              <Ionicons name="swap-horizontal" size={17} color={appColors.primaryDark} />
+              <Text style={styles.formStatusText}>สถานะ: {formStatus} (แตะเพื่อสลับ)</Text>
+            </Pressable>
+          ) : null}
+          <Pressable disabled={saving} onPress={() => void (editingId ? saveEmployee() : addEmployee())} style={({ pressed }) => [styles.addButton, pressed && styles.pressed, saving && styles.disabled]}>
+            {saving ? <ActivityIndicator color="#FFFFFF" size="small" /> : <><Ionicons name={editingId ? 'save-outline' : 'add'} size={19} color="#FFFFFF" /><Text style={styles.addButtonText}>{editingId ? 'บันทึกการแก้ไข' : 'เพิ่มพนักงาน'}</Text></>}
           </Pressable>
+          {editingId ? <Pressable onPress={cancelEditing} style={styles.cancelEditButton}><Text style={styles.cancelEditText}>ยกเลิกการแก้ไข</Text></Pressable> : null}
         </View>
 
         <View style={styles.analysisCard}>
@@ -216,8 +293,19 @@ export default function DashboardScreen() {
 
       <View style={styles.listCard}>
         <View style={styles.sectionHeading}>
-          <View><Text style={styles.sectionTitle}>รายชื่อพนักงาน</Text><Text style={styles.sectionSub}>เลือกเปลี่ยนสถานะหรือลบรายการได้</Text></View>
+          <View><Text style={styles.sectionTitle}>รายชื่อพนักงาน</Text><Text style={styles.sectionSub}>ค้นหา แก้ไข เปลี่ยนสถานะ หรือลบรายการได้</Text></View>
           <View style={styles.countBadge}><Text style={styles.countBadgeText}>{employees.length} คน</Text></View>
+        </View>
+        <View style={styles.searchBox}>
+          <Ionicons name="search-outline" size={18} color={appColors.muted} />
+          <TextInput
+            onChangeText={setSearch}
+            placeholder="ค้นหาชื่อ ตำแหน่ง สถานะ หรือเงินเดือน"
+            placeholderTextColor={appColors.subtle}
+            style={styles.searchInput}
+            value={search}
+          />
+          {search ? <Pressable accessibilityLabel="ล้างคำค้นหา" onPress={() => setSearch('')}><Ionicons name="close-circle" size={17} color={appColors.muted} /></Pressable> : null}
         </View>
         <View style={styles.tableHeader}>
           <Text style={[styles.tableHeading, styles.employeeColumn]}>พนักงาน</Text>
@@ -226,7 +314,7 @@ export default function DashboardScreen() {
           <Text style={[styles.tableHeading, styles.salaryColumn]}>เงินเดือน</Text>
           <Text style={[styles.tableHeading, styles.actionsColumn]}>จัดการ</Text>
         </View>
-        {employees.map((employee) => (
+        {visibleEmployees.map((employee) => (
           <View key={employee.id} style={styles.employeeRow}>
             <View style={styles.employeeColumn}>
               <View style={styles.employeeIdentity}>
@@ -243,6 +331,9 @@ export default function DashboardScreen() {
             </View>
             <Text style={[styles.employeeSalary, styles.salaryColumn]}>{formatSalary(employee.salary)}</Text>
             <View style={[styles.actionsColumn, styles.actions]}>
+              <Pressable accessibilityLabel={`Edit ${employee.name}`} onPress={() => startEditing(employee)} style={styles.actionButton}>
+                <Ionicons name="create-outline" size={16} color={appColors.primaryDark} />
+              </Pressable>
               <Pressable accessibilityLabel={`Toggle status for ${employee.name}`} onPress={() => void changeStatus(employee)} style={styles.actionButton}>
                 <Ionicons name="swap-horizontal" size={17} color={appColors.primaryDark} />
               </Pressable>
@@ -252,9 +343,9 @@ export default function DashboardScreen() {
             </View>
           </View>
         ))}
-        {employees.length === 0 ? <Text style={styles.emptyText}>ยังไม่มีข้อมูลพนักงาน เพิ่มพนักงานได้จากแบบฟอร์มด้านบน</Text> : null}
+        {visibleEmployees.length === 0 ? <Text style={styles.emptyText}>{employees.length === 0 ? 'ยังไม่มีข้อมูลพนักงาน เพิ่มพนักงานได้จากแบบฟอร์มด้านบน' : 'ไม่พบพนักงานที่ตรงกับคำค้นหา'}</Text> : null}
       </View>
-      <Text style={styles.footer}>HR MANAGER · DATA RESETS WHEN THE SERVER RESTARTS</Text>
+      <Text style={styles.footer}>HR MANAGER · EMPLOYEE DATA PERSISTED IN MYSQL</Text>
     </ScrollView>
   );
 }
@@ -297,6 +388,10 @@ const styles = StyleSheet.create({
   input: { backgroundColor: '#FFFCF9', borderColor: appColors.border, borderRadius: 9, borderWidth: 1, color: appColors.ink, fontSize: 12, minHeight: 42, paddingHorizontal: 11 },
   addButton: { alignItems: 'center', backgroundColor: appColors.primary, borderRadius: 10, flexDirection: 'row', gap: 6, justifyContent: 'center', marginTop: 16, minHeight: 44 },
   addButtonText: { color: '#FFFFFF', fontSize: 11, fontWeight: '900' },
+  formStatusButton: { alignItems: 'center', alignSelf: 'flex-start', backgroundColor: appColors.primarySoft, borderRadius: 9, flexDirection: 'row', gap: 6, marginTop: 12, minHeight: 36, paddingHorizontal: 10 },
+  formStatusText: { color: appColors.primaryDark, fontSize: 9, fontWeight: '800' },
+  cancelEditButton: { alignItems: 'center', justifyContent: 'center', marginTop: 10, minHeight: 32 },
+  cancelEditText: { color: appColors.muted, fontSize: 10, fontWeight: '800' },
   pressed: { opacity: 0.82 },
   disabled: { opacity: 0.55 },
   analysisCard: { backgroundColor: appColors.surface, borderColor: appColors.border, borderRadius: appRadius.card, borderWidth: 1, flex: 1, minWidth: 270, padding: 18 },
@@ -320,13 +415,15 @@ const styles = StyleSheet.create({
   listCard: { backgroundColor: appColors.surface, borderColor: appColors.border, borderRadius: appRadius.card, borderWidth: 1, marginTop: 1, overflow: 'hidden', paddingHorizontal: 17, paddingTop: 16 },
   countBadge: { backgroundColor: appColors.primarySoft, borderRadius: 20, paddingHorizontal: 10, paddingVertical: 6 },
   countBadgeText: { color: appColors.primaryDark, fontSize: 9, fontWeight: '900' },
+  searchBox: { alignItems: 'center', backgroundColor: '#FFFCF9', borderColor: appColors.border, borderRadius: 10, borderWidth: 1, flexDirection: 'row', gap: 9, marginBottom: 12, minHeight: 42, paddingHorizontal: 11 },
+  searchInput: { color: appColors.ink, flex: 1, fontSize: 10, minHeight: 40, paddingVertical: 0 },
   tableHeader: { alignItems: 'center', backgroundColor: '#F8F3EF', borderRadius: 8, flexDirection: 'row', minHeight: 34, paddingHorizontal: 9 },
   tableHeading: { color: appColors.muted, fontSize: 8, fontWeight: '900' },
   employeeColumn: { flex: 1.55, minWidth: 100 },
   positionColumn: { flex: 1.2, minWidth: 75 },
   statusColumn: { alignItems: 'flex-start', flex: 0.95, minWidth: 77 },
   salaryColumn: { flex: 0.85, minWidth: 74 },
-  actionsColumn: { flexDirection: 'row', flex: 0.68, justifyContent: 'flex-end', minWidth: 58 },
+  actionsColumn: { flexDirection: 'row', flex: 1.05, justifyContent: 'flex-end', minWidth: 99 },
   employeeRow: { alignItems: 'center', borderBottomColor: appColors.border, borderBottomWidth: 1, flexDirection: 'row', minHeight: 62, paddingHorizontal: 9 },
   employeeIdentity: { alignItems: 'center', flexDirection: 'row', gap: 8, paddingRight: 5 },
   avatar: { alignItems: 'center', backgroundColor: '#FBE5D8', borderRadius: 17, height: 33, justifyContent: 'center', width: 33 },

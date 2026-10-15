@@ -27,6 +27,71 @@ async function api(path, { token = 'mock-jwt-token', ...options } = {}) {
   });
 }
 
+function createFakePool(initialRows = []) {
+  const rows = initialRows.map((employee) => ({ ...employee }));
+  let nextId = rows.reduce((next, employee) => Math.max(next, Number(employee.id) + 1), 1);
+
+  return {
+    rows,
+    async query(sql, parameters = []) {
+      if (sql.includes('WHERE name LIKE')) {
+        const search = parameters[0].slice(1, -1).toLowerCase();
+        return [rows.filter((employee) => (
+          employee.name.toLowerCase().includes(search)
+          || employee.position.toLowerCase().includes(search)
+          || employee.status.toLowerCase().includes(search)
+        ))];
+      }
+      if (sql.includes('SELECT id, name, position, status, salary FROM employees ORDER BY id')) return [[...rows]];
+      if (sql.includes('SELECT id FROM employees LIMIT 1')) return [rows.slice(0, 1)];
+      if (sql.includes('SELECT salary FROM employees')) return [rows.map(({ salary }) => ({ salary }))];
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+    async execute(sql, parameters = []) {
+      if (sql.includes('WHERE name LIKE')) {
+        const search = parameters[0].slice(1, -1).toLowerCase();
+        return [rows.filter((employee) => (
+          employee.name.toLowerCase().includes(search)
+          || employee.position.toLowerCase().includes(search)
+          || employee.status.toLowerCase().includes(search)
+        ))];
+      }
+      if (sql.includes('INSERT INTO employees')) {
+        const [name, position, status, salary] = parameters;
+        const employee = { id: nextId++, name, position, status, salary };
+        rows.push(employee);
+        return [{ insertId: employee.id, affectedRows: 1 }];
+      }
+      if (sql.includes('SELECT id, name, position, status, salary FROM employees WHERE id =')) {
+        return [rows.filter((employee) => employee.id === Number(parameters[0]))];
+      }
+      if (sql.includes('SELECT id FROM employees WHERE id =')) {
+        return [rows.filter((employee) => employee.id === Number(parameters[0])).map(({ id }) => ({ id }))];
+      }
+      if (sql.includes('UPDATE employees SET name')) {
+        const [name, position, status, salary, id] = parameters;
+        const employee = rows.find((item) => item.id === Number(id));
+        if (!employee) return [{ affectedRows: 0 }];
+        Object.assign(employee, { name, position, status, salary });
+        return [{ affectedRows: 1 }];
+      }
+      if (sql.includes('UPDATE employees SET status = IF')) {
+        const employee = rows.find((item) => item.id === Number(parameters[0]));
+        if (!employee) return [{ affectedRows: 0 }];
+        employee.status = employee.status === 'Active' ? 'On Leave' : 'Active';
+        return [{ affectedRows: 1 }];
+      }
+      if (sql.includes('DELETE FROM employees')) {
+        const index = rows.findIndex((item) => item.id === Number(parameters[0]));
+        if (index === -1) return [{ affectedRows: 0 }];
+        rows.splice(index, 1);
+        return [{ affectedRows: 1 }];
+      }
+      throw new Error(`Unexpected query: ${sql}`);
+    },
+  };
+}
+
 test('login accepts only the required credentials and protects employee data', async () => {
   const validLogin = await api('/api/login', {
     token: null,
@@ -113,5 +178,53 @@ test('salary clustering handles an empty employee list without crashing', async 
     ]);
   } finally {
     await new Promise((resolve, reject) => emptyServer.close((error) => error ? reject(error) : resolve()));
+  }
+});
+
+test('MySQL storage persists create, edit, status, search, delete, and salary analytics operations', async () => {
+  const pool = createFakePool();
+  const databaseServer = createApp({ pool }).listen(0, '127.0.0.1');
+  await new Promise((resolve) => databaseServer.once('listening', resolve));
+  const databaseUrl = `http://127.0.0.1:${databaseServer.address().port}`;
+  const databaseApi = (path, options = {}) => fetch(`${databaseUrl}${path}`, {
+    ...options,
+    headers: {
+      Authorization: 'Bearer mock-jwt-token',
+      ...(options.body ? { 'Content-Type': 'application/json' } : {}),
+    },
+  });
+
+  try {
+    const createdResponse = await databaseApi('/api/employees', {
+      method: 'POST',
+      body: JSON.stringify({ name: 'Nisa Example', position: 'Developer', salary: 50000 }),
+    });
+    assert.equal(createdResponse.status, 201);
+    const created = (await createdResponse.json()).employee;
+    assert.equal(created.id, '1');
+    assert.equal(pool.rows.length, 1);
+
+    const updatedResponse = await databaseApi(`/api/employees/${created.id}`, {
+      method: 'PUT',
+      body: JSON.stringify({ name: 'Nisa Updated', position: 'Senior Developer', status: 'On Leave', salary: 60000 }),
+    });
+    assert.deepEqual((await updatedResponse.json()).employee, {
+      id: '1',
+      name: 'Nisa Updated',
+      position: 'Senior Developer',
+      status: 'On Leave',
+      salary: 60000,
+    });
+
+    const search = await databaseApi('/api/employees?search=Senior');
+    assert.equal((await search.json()).employees.length, 1);
+    const clusters = await databaseApi('/api/employees/salary-clusters');
+    assert.equal((await clusters.json()).clusters.reduce((total, item) => total + item.count, 0), 1);
+
+    assert.equal((await databaseApi(`/api/employees/${created.id}/status`, { method: 'PUT' })).status, 200);
+    assert.equal((await databaseApi(`/api/employees/${created.id}`, { method: 'DELETE' })).status, 200);
+    assert.equal(pool.rows.length, 0);
+  } finally {
+    await new Promise((resolve, reject) => databaseServer.close((error) => error ? reject(error) : resolve()));
   }
 });

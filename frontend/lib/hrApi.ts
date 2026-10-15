@@ -21,6 +21,8 @@ export type Employee = {
   salary: number;
 };
 
+export type EmployeeInput = Pick<Employee, 'name' | 'position' | 'salary' | 'status'>;
+
 export type SalaryCluster = {
   group: string;
   centroid: number | null;
@@ -96,6 +98,15 @@ export async function getEmployees(): Promise<Employee[]> {
 export async function createEmployee(input: Pick<Employee, 'name' | 'position' | 'salary'>): Promise<Employee> {
   const payload = await request<{ employee: Employee }>('/api/employees', {
     method: 'POST',
+    body: JSON.stringify(input),
+  });
+  if (!payload.employee) throw new Error('เซิร์ฟเวอร์ไม่ได้ส่งข้อมูลพนักงานกลับมา');
+  return payload.employee;
+}
+
+export async function updateEmployee(id: string, input: EmployeeInput): Promise<Employee> {
+  const payload = await request<{ employee: Employee }>(`/api/employees/${encodeURIComponent(id)}`, {
+    method: 'PUT',
     body: JSON.stringify(input),
   });
   if (!payload.employee) throw new Error('เซิร์ฟเวอร์ไม่ได้ส่งข้อมูลพนักงานกลับมา');
